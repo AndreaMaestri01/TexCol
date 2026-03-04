@@ -285,6 +285,506 @@ class IconButton(tk.Canvas):
         self._redraw()
 
 
+
+
+class RoundedScrollbar(tk.Canvas):
+    """Minimal vertical scrollbar with no arrows and rounded thumb."""
+
+    def __init__(
+        self,
+        master,
+        *,
+        command,
+        width=12,
+        track="#f0f0f0",
+        track_border="#d0d0d0",
+        thumb="#7f1737",
+        thumb_active="#69122e",
+        radius=10,
+        bg=None,
+        **kwargs,
+    ):
+        super().__init__(
+            master,
+            width=width,
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+            bg=(bg if bg is not None else track),
+            **kwargs,
+        )
+        self._command = command
+        self._track = track
+        self._track_border = track_border
+        self._thumb = thumb
+        self._thumb_active = thumb_active
+        self._radius = radius
+
+        self._first = 0.0
+        self._last = 1.0
+        self._dragging = False
+        self._drag_offset = 0
+        self._hover = False
+
+        self.bind("<Configure>", lambda e: self._redraw())
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<ButtonRelease-1>", self._on_release)
+
+        self._redraw()
+
+    def _set_hover(self, v: bool):
+        self._hover = v
+        if not self._dragging:
+            self._redraw()
+
+    def set(self, first, last):
+        try:
+            self._first = float(first)
+            self._last = float(last)
+        except Exception:
+            self._first, self._last = 0.0, 1.0
+        self._redraw()
+
+    def _round_rect(self, x1, y1, x2, y2, r, **kw):
+        r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
+        pts = [
+            x1 + r, y1,
+            x2 - r, y1,
+            x2, y1,
+            x2, y1 + r,
+            x2, y2 - r,
+            x2, y2,
+            x2 - r, y2,
+            x1 + r, y2,
+            x1, y2,
+            x1, y2 - r,
+            x1, y1 + r,
+            x1, y1,
+        ]
+        return self.create_polygon(pts, smooth=True, splinesteps=24, **kw)
+
+    def _thumb_coords(self):
+        h = max(1, self.winfo_height())
+        y1 = int(self._first * h)
+        y2 = int(self._last * h)
+        min_len = 26
+        if y2 - y1 < min_len:
+            mid = (y1 + y2) // 2
+            y1 = max(0, mid - min_len // 2)
+            y2 = min(h, y1 + min_len)
+            y1 = max(0, y2 - min_len)
+        y1 = max(2, y1)
+        y2 = min(h - 2, y2)
+        return y1, y2
+
+    def _redraw(self):
+        self.delete("all")
+        w = max(2, self.winfo_width())
+        h = max(2, self.winfo_height())
+
+        self._round_rect(
+            1,
+            1,
+            w - 1,
+            h - 1,
+            self._radius,
+            fill=self._track,
+            outline=self._track_border,
+            width=1,
+        )
+
+        y1, y2 = self._thumb_coords()
+        fill = self._thumb_active if (self._dragging or self._hover) else self._thumb
+        self._round_rect(
+            2,
+            y1,
+            w - 2,
+            y2,
+            max(6, self._radius - 2),
+            fill=fill,
+            outline="",
+            width=0,
+        )
+
+    def _on_click(self, event):
+        y1, y2 = self._thumb_coords()
+        if y1 <= event.y <= y2:
+            self._dragging = True
+            self._drag_offset = event.y - y1
+            self._redraw()
+            return
+
+        if event.y < y1:
+            self._command("scroll", -1, "pages")
+        else:
+            self._command("scroll", 1, "pages")
+
+    def _on_drag(self, event):
+        if not self._dragging:
+            return
+        h = max(1, self.winfo_height())
+        y1, y2 = self._thumb_coords()
+        thumb_len = max(1, y2 - y1)
+
+        new_y1 = event.y - self._drag_offset
+        new_y1 = max(2, min(h - 2 - thumb_len, new_y1))
+        frac = new_y1 / max(1, (h - thumb_len))
+        frac = max(0.0, min(1.0, frac))
+        self._command("moveto", frac)
+
+    def _on_release(self, event):
+        if self._dragging:
+            self._dragging = False
+            self._redraw()
+
+
+class MinimalDropdown(tk.Canvas):
+    def __init__(
+        self,
+        master,
+        *,
+        values,
+        variable,
+        command=None,
+        bg,
+        fill,
+        hover_fill,
+        border,
+        fg,
+        muted,
+        radius=14,
+        font=("DejaVu Sans", 10, "bold"),
+        padx=14,
+        pady=9,
+        min_width=132,
+    ):
+        self.values = list(values)
+        self.variable = variable
+        self.command = command
+        self.outer_bg = bg
+        self.fill = fill
+        self.hover_fill = hover_fill
+        self.current_fill = fill
+        self.border = border
+        self.fg = fg
+        self.muted = muted
+        self.radius = radius
+        self.padx = padx
+        self.pady = pady
+        self.font = tkfont.Font(font=font)
+        self._popup = None
+        self._outside_binding = None
+
+        text = self.variable.get() if hasattr(self.variable, 'get') else ''
+        content_w = self.font.measure(str(text or '')) + 22
+        width = max(min_width, content_w + 2 * padx)
+        height = max(40, self.font.metrics('linespace') + 2 * pady)
+
+        super().__init__(
+            master,
+            width=width,
+            height=height,
+            bg=bg,
+            highlightthickness=0,
+            bd=0,
+            relief='flat',
+            cursor='hand2',
+        )
+        self.bind('<Configure>', self._redraw)
+        self.bind('<Enter>', self._on_enter)
+        self.bind('<Leave>', self._on_leave)
+        self.bind('<Button-1>', self._toggle_popup)
+        self._redraw()
+
+    def _rounded_rect(self, x1, y1, x2, y2, r, **kwargs):
+        r = min(r, max(1, (x2 - x1) // 2), max(1, (y2 - y1) // 2))
+        points = [
+            x1 + r, y1,
+            x1 + r, y1,
+            x2 - r, y1,
+            x2 - r, y1,
+            x2, y1,
+            x2, y1 + r,
+            x2, y1 + r,
+            x2, y2 - r,
+            x2, y2 - r,
+            x2, y2,
+            x2 - r, y2,
+            x2 - r, y2,
+            x1 + r, y2,
+            x1 + r, y2,
+            x1, y2,
+            x1, y2 - r,
+            x1, y2 - r,
+            x1, y1 + r,
+            x1, y1 + r,
+            x1, y1,
+        ]
+        return self.create_polygon(points, smooth=True, splinesteps=36, **kwargs)
+
+    def _redraw(self, event=None):
+        self.delete('all')
+        w = max(2, self.winfo_width() - 1)
+        h = max(2, self.winfo_height() - 1)
+        self._rounded_rect(
+            1, 1, w, h, self.radius,
+            fill=self.current_fill,
+            outline=self.border,
+            width=1,
+        )
+        text = str(self.variable.get() if hasattr(self.variable, 'get') else '')
+        self.create_text(
+            self.padx,
+            h // 2,
+            text=text,
+            fill=self.fg,
+            font=self.font,
+            anchor='w',
+        )
+        arrow_x = w - self.padx - 5
+        arrow_y = h // 2
+        self.create_polygon(
+            arrow_x - 5, arrow_y - 3,
+            arrow_x + 5, arrow_y - 3,
+            arrow_x, arrow_y + 3,
+            fill=self.muted,
+            outline=self.muted,
+        )
+
+    def _on_enter(self, event=None):
+        self.current_fill = self.hover_fill
+        self._redraw()
+
+    def _on_leave(self, event=None):
+        if self._popup is None:
+            self.current_fill = self.fill
+            self._redraw()
+
+    def _toggle_popup(self, event=None):
+        if self._popup is not None:
+            self._close_popup()
+        else:
+            self._open_popup()
+
+    def _open_popup(self):
+        if self._popup is not None:
+            return
+        self.current_fill = self.hover_fill
+        self._redraw()
+
+        popup = tk.Toplevel(self)
+        popup.overrideredirect(True)
+        popup.transient(self.winfo_toplevel())
+        popup.configure(bg=self.outer_bg)
+        popup.attributes('-topmost', True)
+        x = self.winfo_rootx()
+        y = self.winfo_rooty() + self.winfo_height() + 6
+        popup.geometry(f'+{x}+{y}')
+
+        card = RoundedCard(
+            popup,
+            bg=self.outer_bg,
+            fill=self.fill,
+            border=self.border,
+            radius=16,
+            padding=6,
+            width=max(self.winfo_width(), 132),
+        )
+        card.pack(fill='both', expand=True)
+
+        for idx, value in enumerate(self.values):
+            row = tk.Label(
+                card.inner,
+                text=value,
+                bg=self.fill,
+                fg=self.fg,
+                font=("DejaVu Sans", 10, 'bold' if value == self.variable.get() else 'normal'),
+                padx=12,
+                pady=9,
+                anchor='w',
+                cursor='hand2',
+            )
+            row.pack(fill='x')
+            row.bind('<Enter>', lambda e, r=row: r.configure(bg=self.hover_fill))
+            row.bind('<Leave>', lambda e, r=row, v=value: r.configure(bg=self.fill))
+            row.bind('<Button-1>', lambda e, v=value: self._select(v))
+
+        popup.update_idletasks()
+        self._popup = popup
+        popup.bind('<FocusOut>', lambda e: self._close_popup())
+        popup.bind('<Escape>', lambda e: self._close_popup())
+
+    def _handle_outside_click(self, event):
+        if self._popup is None:
+            return
+        widget = event.widget
+        if widget is self or widget.winfo_toplevel() is self._popup:
+            return
+        self._close_popup()
+
+    def _select(self, value):
+        self.variable.set(value)
+        if callable(self.command):
+            self.command(value)
+        self._close_popup()
+        self._redraw()
+
+    def _close_popup(self):
+        if self._popup is not None:
+            try:
+                self._popup.destroy()
+            except Exception:
+                pass
+            self._popup = None
+        self._outside_binding = None
+        self.current_fill = self.fill
+        self._redraw()
+
+
+class MinimalDialog(tk.Toplevel):
+    def __init__(self, parent, *, title, message, colors, kind='info'):
+        super().__init__(parent)
+        self.withdraw()
+        self.transient(parent)
+        self.title(title)
+        self.configure(bg=colors['bg'])
+        self.resizable(True, True)
+        self.minsize(380, 180)
+        self.geometry('620x340')
+
+        wrap = 'word'
+        font = ("DejaVu Sans", 10)
+        if len(message) > 220 or "\n" in message:
+            font = ("DejaVu Sans Mono", 10)
+            wrap = 'char'
+
+        shell = tk.Frame(self, bg=colors['bg'])
+        shell.pack(fill='both', expand=True, padx=16, pady=16)
+
+        card = RoundedCard(
+            shell,
+            bg=colors['bg'],
+            fill=colors['surface'],
+            border=colors['border'],
+            radius=22,
+            padding=14,
+        )
+        card.pack(fill='both', expand=True)
+
+        head = tk.Frame(card.inner, bg=colors['surface'])
+        head.pack(fill='x', pady=(0, 10))
+
+        badge_text = {'info': 'Info', 'warning': 'Warning', 'error': 'Error'}.get(kind, 'Notice')
+        badge = tk.Label(
+            head,
+            text=badge_text,
+            bg=colors['ghost'],
+            fg=colors['accent'],
+            font=("DejaVu Sans", 9, 'bold'),
+            padx=10,
+            pady=4,
+        )
+        badge.pack(side='left')
+
+        title_lbl = tk.Label(
+            head,
+            text=title,
+            bg=colors['surface'],
+            fg=colors['text'],
+            font=("DejaVu Sans", 12, 'bold'),
+        )
+        title_lbl.pack(side='left', padx=(10, 0))
+
+        body_shell = RoundedCard(
+            card.inner,
+            bg=colors['surface'],
+            fill=colors['surface_alt'],
+            border=colors['input_border'],
+            radius=18,
+            padding=10,
+            height=190,
+        )
+        body_shell.pack(fill='both', expand=True)
+
+        text = tk.Text(
+            body_shell.inner,
+            bg=colors['surface_alt'],
+            fg=colors['text'],
+            insertbackground=colors['accent'],
+            relief='flat',
+            bd=0,
+            highlightthickness=0,
+            wrap=wrap,
+            font=font,
+            padx=8,
+            pady=6,
+        )
+        sb = RoundedScrollbar(
+            body_shell.inner,
+            command=text.yview,
+            width=12,
+            track=colors['surface_soft'],
+            track_border=colors['input_border'],
+            thumb=colors['accent'],
+            thumb_active=colors['accent_hover'],
+            radius=10,
+            bg=colors['surface_alt'],
+        )
+        text.configure(yscrollcommand=sb.set)
+        sb.pack(side='right', fill='y', padx=(8, 0))
+        text.pack(side='left', fill='both', expand=True)
+        text.insert('1.0', message)
+        text.configure(state='disabled')
+
+        foot = tk.Frame(card.inner, bg=colors['surface'])
+        foot.pack(fill='x', pady=(12, 0))
+
+        ok_btn = IconButton(
+            foot,
+            text='OK',
+            command=self._on_ok,
+            bg=colors['surface'],
+            fill=colors['accent'],
+            hover_fill=colors['accent_hover'],
+            fg='#ffffff',
+            radius=14,
+            min_width=86,
+            padx=14,
+            pady=8,
+        )
+        ok_btn.pack(side='right')
+
+        self.bind('<Escape>', lambda e: self._on_ok())
+        self.bind('<Return>', lambda e: self._on_ok())
+        self.protocol('WM_DELETE_WINDOW', self._on_ok)
+        self.deiconify()
+        self.grab_set()
+        self.update_idletasks()
+        self._center(parent)
+
+    def _center(self, parent):
+        self.update_idletasks()
+        pw = parent.winfo_width()
+        ph = parent.winfo_height()
+        px = parent.winfo_rootx()
+        py = parent.winfo_rooty()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        x = px + max(0, (pw - w) // 2)
+        y = py + max(0, (ph - h) // 2)
+        self.geometry(f'{w}x{h}+{x}+{y}')
+
+    def _on_ok(self):
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+
+
 class TexColApp:
 
     def _apply_modern_theme(self):
@@ -353,17 +853,16 @@ class TexColApp:
         return widget
 
     def _make_minimal_scrollbar(self, parent, command):
-        return tk.Scrollbar(
+        return RoundedScrollbar(
             parent,
-            orient="vertical",
             command=command,
-            width=10,
-            bd=0,
-            relief="flat",
-            highlightthickness=0,
-            bg=self.colors["surface_soft"],
-            activebackground=self.colors["accent"],
-            troughcolor=self.colors["surface_alt"],
+            width=12,
+            track=self.colors["surface_soft"],
+            track_border=self.colors["input_border"],
+            thumb=self.colors["accent"],
+            thumb_active=self.colors["accent_hover"],
+            radius=10,
+            bg=self.colors["surface_alt"],
         )
 
     def _make_rounded_textbox(self, parent, height, min_height):
@@ -381,7 +880,7 @@ class TexColApp:
         sb = self._make_minimal_scrollbar(shell.inner, text.yview)
         text.configure(yscrollcommand=sb.set)
 
-        sb.pack(side="right", fill="y")
+        sb.pack(side="right", fill="y", padx=(8, 0))
         text.pack(side="left", fill="both", expand=True)
 
         return shell, text
@@ -418,6 +917,19 @@ class TexColApp:
         widget.bind("<Control-A>", self._select_all_text)
         widget.bind("<Control-v>", self._paste_replace_selection)
         widget.bind("<Control-V>", self._paste_replace_selection)
+
+    def _show_dialog(self, title, message, kind="info"):
+        dlg = MinimalDialog(self.root, title=title, message=str(message), colors=self.colors, kind=kind)
+        self.root.wait_window(dlg)
+
+    def _show_info(self, title, message):
+        self._show_dialog(title, message, kind="info")
+
+    def _show_warning(self, title, message):
+        self._show_dialog(title, message, kind="warning")
+
+    def _show_error(self, title, message):
+        self._show_dialog(title, message, kind="error")
 
     def _set_input_mode(self, mode: str):
         mode = (mode or "").strip().lower()
@@ -476,7 +988,7 @@ class TexColApp:
         self.root = root
         root.title("TexCol")
         root.geometry("760x780")
-        root.minsize(160, 640)
+        root.minsize(100, 640)
 
         self._apply_modern_theme()
         self._load_button_icons()
@@ -487,7 +999,7 @@ class TexColApp:
         try:
             _safe_wipe_dir(self.runtime_dir)
         except Exception as e:
-            messagebox.showerror(
+            self._show_error(
                 "TexCol",
                 f"Unable to initialize runtime folder:\n{self.runtime_dir}\n\nDetails:\n{e}",
             )
@@ -549,8 +1061,9 @@ class TexColApp:
         )
         preamble_box.pack(fill="x")
 
-        # Input mode toggle
+        # Input mode toggle + compiler
         self.input_mode = tk.StringVar(value="formula")
+        self.compiler = tk.StringVar(value="pdflatex")
 
         formula_card = RoundedCard(
             main,
@@ -600,6 +1113,21 @@ class TexColApp:
             min_width=72,
         )
         self.mode_tikz_btn.pack(side="left")
+        # Compiler selector (right)
+        self.compiler_dropdown = MinimalDropdown(
+            formula_head,
+            values=("pdflatex", "lualatex", "xelatex"),
+            variable=self.compiler,
+            bg=self.colors["surface"],
+            fill=self.colors["ghost"],
+            hover_fill=self.colors["soft_hover"],
+            border=self.colors["input_border"],
+            fg=self.colors["text"],
+            muted=self.colors["muted"],
+            radius=14,
+            min_width=136,
+        )
+        self.compiler_dropdown.pack(side="right")
 
         formula_box, self.formula = self._make_rounded_textbox(
             formula_card.inner, height=6, min_height=140
@@ -759,7 +1287,7 @@ class TexColApp:
             self._redraw_preview()
             self.status.config(text="Cleared")
         except Exception as e:
-            messagebox.showerror("TexCol", f"Temporary cleanup error:\n{e}")
+            self._show_error("TexCol", f"Temporary cleanup error:\n{e}")
 
     # ----------------------------
     # Drag (SVG file)
@@ -888,9 +1416,9 @@ class TexColApp:
     def save_preamble(self):
         try:
             PREAMBLE_FILE.write_text(self.preamble.get("1.0", "end"), encoding="utf-8")
-            messagebox.showinfo("TexCol", f"Preamble saved to:\n{PREAMBLE_FILE}")
+            self._show_info("TexCol", f"Preamble saved to:\n{PREAMBLE_FILE}")
         except Exception as e:
-            messagebox.showerror("TexCol", f"Unable to save preamble:\n{e}")
+            self._show_error("TexCol", f"Unable to save preamble:\n{e}")
 
     # ----------------------------
     # Generate
@@ -919,10 +1447,14 @@ class TexColApp:
             mode = "formula"
 
         if not formula:
-            messagebox.showwarning("TexCol", "Empty formula.")
+            self._show_warning("TexCol", "Empty formula.")
             return
 
-        render_key = (mode, preamble, formula)
+        compiler = (self.compiler.get() or "pdflatex").strip()
+        if compiler not in {"pdflatex", "lualatex", "xelatex"}:
+            compiler = "pdflatex"
+
+        render_key = (mode, compiler, preamble, formula)
         if render_key == self._last_render_key and self.svg_data:
             self.status.config(text="Already up to date")
             return
@@ -931,7 +1463,7 @@ class TexColApp:
         if mode == "tikz":
             body_src = formula.strip()
             if not body_src:
-                messagebox.showwarning("TexCol", "Empty TikZ input.")
+                self._show_warning("TexCol", "Empty TikZ input.")
                 return
 
             if re.search(r"\\begin\{tikzpicture\}", body_src) is None:
@@ -943,9 +1475,7 @@ class TexColApp:
                 "\\documentclass[tikz,border=2pt]{standalone}\n"
                 f"{preamble}\n"
                 "\\begin{document}\n"
-                "{\\fontsize{25}{30}\\selectfont\n"
                 f"{body}\n"
-                "}\n"
                 "\\end{document}\n"
             )
 
@@ -959,7 +1489,7 @@ class TexColApp:
             try:
                 subprocess.run(
                     [
-                        "pdflatex",
+                        compiler,
                         "-interaction=nonstopmode",
                         "-halt-on-error",
                         "-output-directory",
@@ -994,11 +1524,11 @@ class TexColApp:
                 if getattr(e, "stderr", None):
                     out += b"\n" + e.stderr
                 msg = out.decode(errors="replace") if out else str(e)
-                messagebox.showerror("LaTeX error", msg)
+                self._show_error("LaTeX error", msg)
                 self.status.config(text="Error.")
                 return
             except FileNotFoundError as e:
-                messagebox.showerror(
+                self._show_error(
                     "TexCol",
                     f"Command not found: {e.filename}\n"
                     "Install required packages, for example:\n"
@@ -1141,7 +1671,7 @@ class TexColApp:
         if body is None:
             body = stripped
             if converted_env_name in ambiguous_display_envs:
-                messagebox.showwarning(
+                self._show_warning(
                     "TexCol - bounding box",
                     "L'ambiente '%s' non e' stato convertito automaticamente in una variante tight.\n\n"
                     "Se vuoi un SVG non tagliato, conviene usare una forma interna come:\n"
@@ -1173,7 +1703,7 @@ class TexColApp:
         try:
             subprocess.run(
                 [
-                    "pdflatex",
+                    compiler,
                     "-interaction=nonstopmode",
                     "-halt-on-error",
                     "-output-directory",
@@ -1208,10 +1738,10 @@ class TexColApp:
             if getattr(e, "stderr", None):
                 out += b"\n" + e.stderr
             msg = out.decode(errors="replace") if out else str(e)
-            messagebox.showerror("LaTeX error", msg)
+            self._show_error("LaTeX error", msg)
             self.status.config(text="Error.")
         except FileNotFoundError as e:
-            messagebox.showerror(
+            self._show_error(
                 "TexCol",
                 f"Command not found: {e.filename}\n"
                 "Install required packages, for example:\n"
@@ -1222,7 +1752,7 @@ class TexColApp:
 
     def open_ppt_web_copy(self):
         if not self.svg_data:
-            messagebox.showwarning("TexCol", "No formula generated.")
+            self._show_warning("TexCol", "No formula generated.")
             return
 
         self.runtime_svg.write_text(self.svg_data, encoding="utf-8")
@@ -1277,7 +1807,7 @@ class TexColApp:
     # ----------------------------
     def copy_svg(self):
         if not self.svg_data:
-            messagebox.showwarning("TexCol", "No formula generated.")
+            self._show_warning("TexCol", "No formula generated.")
             return
 
         svg_bytes = self.svg_data.encode("utf-8")
@@ -1292,7 +1822,7 @@ class TexColApp:
                     input=svg_uri,
                     check=True,
                 )
-                messagebox.showinfo("TexCol", "SVG copied as file (URI).")
+                self._show_info("TexCol", "SVG copied as file (URI).")
                 return
             except Exception as e:
                 try:
@@ -1301,10 +1831,10 @@ class TexColApp:
                         input=svg_bytes,
                         check=True,
                     )
-                    messagebox.showinfo("TexCol", "SVG copied to clipboard (image/svg+xml).")
+                    self._show_info("TexCol", "SVG copied to clipboard (image/svg+xml).")
                     return
                 except Exception:
-                    messagebox.showerror("TexCol", f"wl-copy error: {e}")
+                    self._show_error("TexCol", f"wl-copy error: {e}")
                     return
 
         # X11: xclip
@@ -1315,7 +1845,7 @@ class TexColApp:
                     input=svg_uri,
                     check=True,
                 )
-                messagebox.showinfo("TexCol", "SVG copied as file (URI).")
+                self._show_info("TexCol", "SVG copied as file (URI).")
                 return
             except Exception as e:
                 try:
@@ -1324,13 +1854,13 @@ class TexColApp:
                         input=svg_bytes,
                         check=True,
                     )
-                    messagebox.showinfo("TexCol", "SVG copied to clipboard (image/svg+xml).")
+                    self._show_info("TexCol", "SVG copied to clipboard (image/svg+xml).")
                     return
                 except Exception:
-                    messagebox.showerror("TexCol", f"xclip error: {e}")
+                    self._show_error("TexCol", f"xclip error: {e}")
                     return
 
-        messagebox.showwarning(
+        self._show_warning(
             "TexCol",
             "Neither wl-copy nor xclip was found.\n"
             "Install one of:\n"
@@ -1344,7 +1874,7 @@ class TexColApp:
     # ----------------------------
     def download_svg(self):
         if not self.svg_data:
-            messagebox.showwarning("TexCol", "No formula generated.")
+            self._show_warning("TexCol", "No formula generated.")
             return
 
         path = filedialog.asksaveasfilename(
@@ -1360,9 +1890,9 @@ class TexColApp:
         try:
             out_path.write_text(self.svg_data, encoding="utf-8")
             self.status.config(text="SVG saved")
-            messagebox.showinfo("TexCol", f"SVG saved to:\n{out_path}")
+            self._show_info("TexCol", f"SVG saved to:\n{out_path}")
         except Exception as e:
-            messagebox.showerror("TexCol", f"Unable to save SVG:\n{e}")
+            self._show_error("TexCol", f"Unable to save SVG:\n{e}")
 
 # ----------------------------
 # Main

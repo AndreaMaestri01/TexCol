@@ -11,19 +11,22 @@ It is designed for a fast workflow: write a formula, generate, preview, then exp
 3. [Project Structure](#project-structure)
 4. [Requirements](#requirements)
 5. [Installation](#installation)
-6. [Run](#run)
-7. [Usage](#usage)
-8. [TikZ Mode](#tikz-mode)
-9. [Preamble Configuration](#preamble-configuration)
-10. [Install as an Ubuntu App](#install-as-an-ubuntu-app)
-11. [Troubleshooting](#troubleshooting)
-12. [Known Limitations](#known-limitations)
-13. [Roadmap](#roadmap)
-14. [License](#license)
+6. [Quick Start](#quick-start)
+7. [Run](#run)
+8. [Usage](#usage)
+9. [TikZ Mode](#tikz-mode)
+10. [Compiler Selection](#compiler-selection)
+11. [Preamble Configuration](#preamble-configuration)
+12. [Export and Clipboard](#export-and-clipboard)
+13. [Install as an Ubuntu App](#install-as-an-ubuntu-app)
+14. [Troubleshooting](#troubleshooting)
+15. [Known Limitations](#known-limitations)
+16. [Roadmap](#roadmap)
+17. [License](#license)
 
 ## Overview
 
-TexCol compiles your LaTeX formula with `pdflatex`, converts the result to SVG with `dvisvgm`, and renders a preview in the GUI.
+TexCol compiles your LaTeX formula with the selected compiler (`pdflatex`, `lualatex`, or `xelatex`), converts the result to SVG with `dvisvgm`, and renders a preview in the GUI.
 
 The main goal is high quality vector math output with a simple desktop interface.
 
@@ -32,10 +35,13 @@ The main goal is high quality vector math output with a simple desktop interface
 - Preamble editor (`preamble.tex`) with persistent save
 - Formula editor with LaTeX input
 - Input mode toggle: `Formula` or `TikZ`
+- Compiler selector: `pdflatex`, `lualatex`, `xelatex`
 - One-click SVG generation
 - Live preview in the app
 - Drag and drop support for generated SVG
 - Download/export SVG to any location
+- Modern in-app dialogs for info/warning/error output
+- Rounded custom scrollbars for a cleaner UI
 - Runtime cleanup button for temporary files
 - Tight bounding-box handling for many display-math cases
 
@@ -63,6 +69,7 @@ The main goal is high quality vector math output with a simple desktop interface
 - Python 3.10+
 - LaTeX tools in PATH:
   - `pdflatex`
+  - Optional: `lualatex`, `xelatex` (if you want to use them from the compiler selector)
   - `dvisvgm`
 
 ### Python packages
@@ -105,6 +112,16 @@ sudo apt install -y python3-tk texlive-latex-base dvisvgm
 
 If your formulas require additional LaTeX packages, install the matching TeX packages on your system.
 
+## Quick Start
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip pillow cairosvg tkinterdnd2
+sudo apt install -y python3-tk texlive-latex-base dvisvgm
+python3 TexCol.py
+```
+
 ## Run
 
 From the project root:
@@ -123,9 +140,10 @@ At first run, TexCol creates `TexCol_DnD_tmp/` inside the project folder and use
    - **Formula** for math expressions/equations
    - **TikZ** for diagrams and drawings
 4. Type your content in the editor.
-5. Click **Generate**.
-6. Check the **Preview**.
-7. Click **Download** to save SVG, or drag and drop directly into supported apps.
+5. Choose the compiler from the top-right dropdown (`pdflatex`, `lualatex`, `xelatex`).
+6. Click **Generate**.
+7. Check the **Preview**.
+8. Click **Download** to save SVG, or drag and drop directly into supported apps.
 
 ## TikZ Mode
 
@@ -143,6 +161,16 @@ Use **TikZ** mode when you want to render diagrams instead of plain math formula
 - Rendering is done with the `standalone` class in TikZ mode, so output is tightly cropped and ready for SVG export.
 - Keep required TikZ packages/libraries in your preamble (for example `\usepackage{tikz}` and `\usetikzlibrary{positioning}`).
 
+## Compiler Selection
+
+TexCol supports three LaTeX compilers from the UI dropdown:
+
+- `pdflatex` (default, fastest for common workflows)
+- `lualatex` (useful for modern font/unicode workflows)
+- `xelatex` (useful for system font workflows)
+
+The selected compiler is part of the render cache key, so switching compiler forces a correct re-render.
+
 ## Preamble Configuration
 
 TexCol loads `preamble.tex` at startup and saves it with the **Save** button.
@@ -154,9 +182,17 @@ Default example:
 \usepackage{physics}
 \usepackage{braket}
 \usepackage{slashed}
+\usepackage{tikz}
+\usetikzlibrary{positioning}
 ```
 
 You can add custom packages/macros based on your use case.
+
+## Export and Clipboard
+
+- **Download** saves the current SVG to a path you choose.
+- **Drag and drop** uses a runtime SVG file in `TexCol_DnD_tmp/` for quick transfer to compatible apps.
+- **Copy SVG** tries Wayland (`wl-copy`) first, then X11 (`xclip`), using URI/file and `image/svg+xml` fallback modes.
 
 ## Install as an Ubuntu App
 
@@ -223,6 +259,18 @@ Install missing LaTeX tools:
 ```bash
 sudo apt install texlive-latex-base dvisvgm
 ```
+
+If you selected `lualatex` or `xelatex`, ensure those binaries are installed too (typically via `texlive-luatex` and `texlive-xetex` on Ubuntu/Debian).
+
+### `Command not found: lualatex` or `xelatex`
+
+Install optional engines:
+
+```bash
+sudo apt install texlive-luatex texlive-xetex
+```
+
+Or switch compiler back to `pdflatex` from the dropdown.
 
 ### `tkinter` import error
 
