@@ -22,11 +22,12 @@ from tkinterdnd2 import TkinterDnD, DND_FILES, COPY
 # ----------------------------
 APP_DIR = Path(__file__).resolve().parent
 
+LEGACY_APP_DIR = Path.home() / "TexCol_app"
 PREAMBLE_FILE = APP_DIR / "preamble.tex"
+LEGACY_PREAMBLE_FILE = LEGACY_APP_DIR / "preamble.tex"
 
-# Runtime folder in project directory (portable across machines)
-RUNTIME_DIR = APP_DIR / "TexCol_DnD_tmp"
-ICON_FILE = APP_DIR / "texcol.png"
+# Dedicated folder (no /tmp): visible to Firefox (snap-safe)
+RUNTIME_DIR = Path("/home/andrea-maestri/user/TexCol_app/TexCol_DnD_tmp")
 
 
 # ----------------------------
@@ -35,14 +36,14 @@ ICON_FILE = APP_DIR / "texcol.png"
 def _safe_wipe_dir(dir_path: Path) -> None:
     """
     Delete ALL contents inside the folder while keeping the folder itself.
-    Delete only the expected runtime folder.
+    Minimal safety check: requires path name to contain 'TexCol_DnD_tmp' and be deep enough.
     """
     dp = dir_path.resolve()
-    if dp.name != "TexCol_DnD_tmp":
+    if "TexCol_DnD_tmp" not in dp.name:
         raise RuntimeError(f"Refuse wipe: path name not expected: {dp}")
 
-    # Avoid disasters like wiping root-level paths.
-    if len(dp.parts) < 3:
+    # Avoid disasters like wiping HOME or root paths
+    if len(dp.parts) < 5:
         raise RuntimeError(f"Refuse wipe: path too shallow: {dp}")
 
     dp.mkdir(parents=True, exist_ok=True)
@@ -272,6 +273,17 @@ class IconButton(tk.Canvas):
         if callable(self.command):
             self.command()
 
+    def set_theme(self, *, fill=None, hover_fill=None, fg=None):
+        """Dynamically update button colors (used for toggle buttons)."""
+        if fill is not None:
+            self.fill = fill
+            self.current_fill = fill
+        if hover_fill is not None:
+            self.hover_fill = hover_fill
+        if fg is not None:
+            self.fg = fg
+        self._redraw()
+
 
 class TexColApp:
 
@@ -340,6 +352,20 @@ class TexColApp:
         self._bind_text_shortcuts(widget)
         return widget
 
+    def _make_minimal_scrollbar(self, parent, command):
+        return tk.Scrollbar(
+            parent,
+            orient="vertical",
+            command=command,
+            width=10,
+            bd=0,
+            relief="flat",
+            highlightthickness=0,
+            bg=self.colors["surface_soft"],
+            activebackground=self.colors["accent"],
+            troughcolor=self.colors["surface_alt"],
+        )
+
     def _make_rounded_textbox(self, parent, height, min_height):
         shell = RoundedCard(
             parent,
@@ -350,8 +376,14 @@ class TexColApp:
             padding=10,
             height=min_height,
         )
+
         text = self._make_text_widget(shell.inner, height)
-        text.pack(fill="both", expand=True)
+        sb = self._make_minimal_scrollbar(shell.inner, text.yview)
+        text.configure(yscrollcommand=sb.set)
+
+        sb.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+
         return shell, text
 
     def _select_all_text(self, event=None):
@@ -387,11 +419,32 @@ class TexColApp:
         widget.bind("<Control-v>", self._paste_replace_selection)
         widget.bind("<Control-V>", self._paste_replace_selection)
 
+    def _set_input_mode(self, mode: str):
+        mode = (mode or "").strip().lower()
+        if mode not in {"formula", "tikz"}:
+            mode = "formula"
+        self.input_mode.set(mode)
+
+        if mode == "formula":
+            self.mode_formula_btn.set_theme(
+                fill=self.colors["accent"], hover_fill=self.colors["accent_hover"], fg="#ffffff"
+            )
+            self.mode_tikz_btn.set_theme(
+                fill=self.colors["ghost"], hover_fill=self.colors["soft_hover"], fg=self.colors["text"]
+            )
+        else:
+            self.mode_tikz_btn.set_theme(
+                fill=self.colors["accent"], hover_fill=self.colors["accent_hover"], fg="#ffffff"
+            )
+            self.mode_formula_btn.set_theme(
+                fill=self.colors["ghost"], hover_fill=self.colors["soft_hover"], fg=self.colors["text"]
+            )
+
     def _load_icon_asset(self, candidates, size=(18, 18)):
         if not hasattr(self, "_icon_refs"):
             self._icon_refs = {}
 
-        search_dirs = [APP_DIR / "icons"]
+        search_dirs = [APP_DIR / "icons", RUNTIME_DIR.parent / "icons", LEGACY_APP_DIR / "icons"]
         extensions = (".png", ".webp", ".jpg", ".jpeg")
 
         for directory in search_dirs:
@@ -429,7 +482,7 @@ class TexColApp:
         self._load_button_icons()
         root.configure(bg=self.colors["bg"])
 
-        # Runtime directory
+        # Runtime directory (fixed)
         self.runtime_dir = RUNTIME_DIR
         try:
             _safe_wipe_dir(self.runtime_dir)
@@ -496,6 +549,9 @@ class TexColApp:
         )
         preamble_box.pack(fill="x")
 
+        # Input mode toggle
+        self.input_mode = tk.StringVar(value="formula")
+
         formula_card = RoundedCard(
             main,
             bg=self.colors["bg"],
@@ -503,16 +559,50 @@ class TexColApp:
             border=self.colors["border"],
             radius=24,
             padding=12,
-            height=165,
+            height=215,
         )
         formula_card.pack(fill="x", pady=(0, 14))
 
         formula_head = tk.Frame(formula_card.inner, bg=self.colors["surface"])
         formula_head.pack(fill="x", pady=(0, 8))
-        ttk.Label(formula_head, text="Formula", style="CardTitle.TLabel").pack(side="left")
+
+        toggle = tk.Frame(formula_head, bg=self.colors["surface"])
+        toggle.pack(side="left")
+        self.mode_formula_btn = IconButton(
+            toggle,
+            text="Formula",
+            image=None,
+            command=lambda: self._set_input_mode("formula"),
+            bg=self.colors["surface"],
+            fill=self.colors["accent"],
+            hover_fill=self.colors["accent_hover"],
+            fg="#ffffff",
+            radius=14,
+            font=("DejaVu Sans", 10, "bold"),
+            padx=14,
+            pady=8,
+            min_width=96,
+        )
+        self.mode_formula_btn.pack(side="left", padx=(0, 8))
+        self.mode_tikz_btn = IconButton(
+            toggle,
+            text="TikZ",
+            image=None,
+            command=lambda: self._set_input_mode("tikz"),
+            bg=self.colors["surface"],
+            fill=self.colors["ghost"],
+            hover_fill=self.colors["soft_hover"],
+            fg=self.colors["text"],
+            radius=14,
+            font=("DejaVu Sans", 10, "bold"),
+            padx=14,
+            pady=8,
+            min_width=72,
+        )
+        self.mode_tikz_btn.pack(side="left")
 
         formula_box, self.formula = self._make_rounded_textbox(
-            formula_card.inner, height=4, min_height=90
+            formula_card.inner, height=6, min_height=140
         )
         formula_box.pack(fill="x")
 
@@ -579,7 +669,7 @@ class TexColApp:
             border=self.colors["border"],
             radius=24,
             padding=12,
-            height=300,
+            height=240,
         )
         preview_card.pack(fill="both", expand=True)
 
@@ -615,6 +705,7 @@ class TexColApp:
         self.png_bytes = None
         self.preview_img = None
 
+        self._set_input_mode("formula")
         self.load_preamble()
 
     # ----------------------------
@@ -664,6 +755,7 @@ class TexColApp:
             self.svg_data = None
             self.png_bytes = None
             self._last_render_key = None
+            self.formula.delete("1.0", "end")
             self._redraw_preview()
             self.status.config(text="Cleared")
         except Exception as e:
@@ -783,6 +875,15 @@ class TexColApp:
     def load_preamble(self):
         if PREAMBLE_FILE.exists():
             self.preamble.insert("1.0", PREAMBLE_FILE.read_text(encoding="utf-8"))
+            return
+
+        if LEGACY_PREAMBLE_FILE.exists():
+            content = LEGACY_PREAMBLE_FILE.read_text(encoding="utf-8")
+            self.preamble.insert("1.0", content)
+            try:
+                PREAMBLE_FILE.write_text(content, encoding="utf-8")
+            except Exception:
+                pass
 
     def save_preamble(self):
         try:
@@ -809,15 +910,102 @@ class TexColApp:
     def generate(self):
         preamble = self.preamble.get("1.0", "end").strip()
         formula = self.formula.get("1.0", "end").strip()
+        mode = "formula"
+        try:
+            mode = (self.input_mode.get() or "formula").strip().lower()
+        except Exception:
+            mode = "formula"
+        if mode not in {"formula", "tikz"}:
+            mode = "formula"
 
         if not formula:
             messagebox.showwarning("TexCol", "Empty formula.")
             return
 
-        render_key = (preamble, formula)
+        render_key = (mode, preamble, formula)
         if render_key == self._last_render_key and self.svg_data:
             self.status.config(text="Already up to date")
             return
+
+
+        if mode == "tikz":
+            body_src = formula.strip()
+            if not body_src:
+                messagebox.showwarning("TexCol", "Empty TikZ input.")
+                return
+
+            if re.search(r"\\begin\{tikzpicture\}", body_src) is None:
+                body = "\\begin{tikzpicture}\n" + body_src + "\n\\end{tikzpicture}"
+            else:
+                body = body_src
+
+            tex = (
+                "\\documentclass[tikz,border=2pt]{standalone}\n"
+                f"{preamble}\n"
+                "\\begin{document}\n"
+                "{\\fontsize{25}{30}\\selectfont\n"
+                f"{body}\n"
+                "}\n"
+                "\\end{document}\n"
+            )
+
+            self._clean_build_dir()
+            tex_path = self.build_dir / "eq.tex"
+            pdf_path = self.build_dir / "eq.pdf"
+            svg_path = self.build_dir / "eq.svg"
+            tex_path.write_text(tex, encoding="utf-8")
+            t0 = time.perf_counter()
+
+            try:
+                subprocess.run(
+                    [
+                        "pdflatex",
+                        "-interaction=nonstopmode",
+                        "-halt-on-error",
+                        "-output-directory",
+                        str(self.build_dir),
+                        str(tex_path),
+                    ],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+
+                subprocess.run(
+                    ["dvisvgm", "--pdf", "-n", "-o", str(svg_path), str(pdf_path)],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+
+                self.svg_data = svg_path.read_text(encoding="utf-8")
+                self.runtime_svg.write_text(self.svg_data, encoding="utf-8")
+                self.png_bytes = cairosvg.svg2png(bytestring=self.svg_data.encode())
+                self._redraw_preview()
+                self._last_render_key = render_key
+                elapsed_ms = int((time.perf_counter() - t0) * 1000)
+                self.status.config(text=f"Rendered in {elapsed_ms} ms")
+                return
+
+            except subprocess.CalledProcessError as e:
+                out = b""
+                if getattr(e, "stdout", None):
+                    out += e.stdout
+                if getattr(e, "stderr", None):
+                    out += b"\n" + e.stderr
+                msg = out.decode(errors="replace") if out else str(e)
+                messagebox.showerror("LaTeX error", msg)
+                self.status.config(text="Error.")
+                return
+            except FileNotFoundError as e:
+                messagebox.showerror(
+                    "TexCol",
+                    f"Command not found: {e.filename}\n"
+                    "Install required packages, for example:\n"
+                    "  sudo apt install texlive-latex-base dvisvgm"
+                )
+                self.status.config(text="Error.")
+                return
 
         display_envs = {
             "align", "align*",
@@ -1184,7 +1372,7 @@ if __name__ == "__main__":
     root.title("TexCol")
 
     try:
-        icon_path = ICON_FILE
+        icon_path = Path("/home/andrea-maestri/user/TexCol_app/texcol.png")
         if icon_path.exists():
             icon_img = Image.open(icon_path).convert("RGBA")
             icon_img.thumbnail((128, 128), Image.LANCZOS)

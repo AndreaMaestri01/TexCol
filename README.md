@@ -13,12 +13,13 @@ It is designed for a fast workflow: write a formula, generate, preview, then exp
 5. [Installation](#installation)
 6. [Run](#run)
 7. [Usage](#usage)
-8. [Preamble Configuration](#preamble-configuration)
-9. [Install as an Ubuntu App](#install-as-an-ubuntu-app)
-10. [Troubleshooting](#troubleshooting)
-11. [Known Limitations](#known-limitations)
-12. [Roadmap](#roadmap)
-13. [License](#license)
+8. [TikZ Mode](#tikz-mode)
+9. [Preamble Configuration](#preamble-configuration)
+10. [Install as an Ubuntu App](#install-as-an-ubuntu-app)
+11. [Troubleshooting](#troubleshooting)
+12. [Known Limitations](#known-limitations)
+13. [Roadmap](#roadmap)
+14. [License](#license)
 
 ## Overview
 
@@ -30,6 +31,7 @@ The main goal is high quality vector math output with a simple desktop interface
 
 - Preamble editor (`preamble.tex`) with persistent save
 - Formula editor with LaTeX input
+- Input mode toggle: `Formula` or `TikZ`
 - One-click SVG generation
 - Live preview in the app
 - Drag and drop support for generated SVG
@@ -117,10 +119,29 @@ At first run, TexCol creates `TexCol_DnD_tmp/` inside the project folder and use
 
 1. Open TexCol.
 2. Edit the **Preamble** section (or keep defaults).
-3. Type your formula in **Formula**.
-4. Click **Generate**.
-5. Check the **Preview**.
-6. Click **Download** to save SVG, or drag and drop directly into supported apps.
+3. Choose the input mode:
+   - **Formula** for math expressions/equations
+   - **TikZ** for diagrams and drawings
+4. Type your content in the editor.
+5. Click **Generate**.
+6. Check the **Preview**.
+7. Click **Download** to save SVG, or drag and drop directly into supported apps.
+
+## TikZ Mode
+
+Use **TikZ** mode when you want to render diagrams instead of plain math formulas.
+
+- If your input already contains a `tikzpicture` environment, TexCol uses it as-is.
+- If not, TexCol automatically wraps your input in:
+
+```tex
+\begin{tikzpicture}
+...
+\end{tikzpicture}
+```
+
+- Rendering is done with the `standalone` class in TikZ mode, so output is tightly cropped and ready for SVG export.
+- Keep required TikZ packages/libraries in your preamble (for example `\usepackage{tikz}` and `\usetikzlibrary{positioning}`).
 
 ## Preamble Configuration
 
