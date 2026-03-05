@@ -37,11 +37,14 @@ The main goal is high quality vector math output with a simple desktop interface
 - Input mode toggle: `Formula` or `TikZ`
 - Compiler selector: `pdflatex`, `lualatex`, `xelatex`
 - One-click SVG generation
+- Render cache for repeated formulas/preambles (faster regeneration)
 - Live preview in the app
 - Drag and drop support for generated SVG
 - Download/export SVG to any location
 - Modern in-app dialogs for info/warning/error output
+- Enhanced compile-error dialog with short summary + expandable full log
 - Rounded custom scrollbars for a cleaner UI
+- Lightweight LaTeX syntax highlighting in both editors
 - Runtime cleanup button for temporary files
 - Tight bounding-box handling for many display-math cases
 
@@ -58,6 +61,7 @@ The main goal is high quality vector math output with a simple desktop interface
 │   ├── generate.png
 │   └── save.png
 ├── TexCol_DnD_tmp/        # Runtime folder (auto-created, gitignored)
+│   └── cache/             # Render cache (auto-managed)
 └── README.md
 ```
 
@@ -130,7 +134,7 @@ From the project root:
 python3 TexCol.py
 ```
 
-At first run, TexCol creates `TexCol_DnD_tmp/` inside the project folder and uses it for temporary runtime artifacts.
+At first run, TexCol creates `TexCol_DnD_tmp/` inside the project folder and uses it for temporary runtime artifacts and render cache data.
 
 ## Usage
 
@@ -179,11 +183,12 @@ Default example:
 
 ```tex
 \usepackage{amsmath,amssymb,mathtools}
-\usepackage{physics}
 \usepackage{braket}
 \usepackage{slashed}
 \usepackage{tikz}
-\usetikzlibrary{positioning}
+\usetikzlibrary{positioning,matrix,fit,decorations.markings}
+\usepackage{graphicx}
+\newcommand{\scalemath}[2]{\scalebox{#1}{$#2$}}
 ```
 
 You can add custom packages/macros based on your use case.

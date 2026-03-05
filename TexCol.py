@@ -4,10 +4,12 @@ from tkinter import ttk, messagebox, filedialog
 import subprocess
 from pathlib import Path
 import shutil
+import os
 import io
 import atexit
 import time
 import threading
+import hashlib
 import webbrowser
 import re
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -785,6 +787,185 @@ class MinimalDialog(tk.Toplevel):
         self.destroy()
 
 
+def _extract_first_useful_latex_error(log_text: str) -> str:
+    """Return a short, human-useful error snippet from a LaTeX log."""
+    if not log_text:
+        return ""
+    lines = log_text.splitlines()
+    # Prefer TeX-style error lines starting with "!"
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("!"):
+            snippet = [line]
+            # include a few following context lines (often include 'l.<num>')
+            for j in range(i + 1, min(i + 10, len(lines))):
+                if lines[j].strip() == "" and len(snippet) >= 2:
+                    break
+                snippet.append(lines[j])
+                if lines[j].lstrip().startswith("l."):
+                    # keep one more context line if present
+                    if j + 1 < len(lines) and lines[j + 1].strip():
+                        snippet.append(lines[j + 1])
+                    break
+            return "\n".join(snippet).strip()
+    # Fallback: look for common fatal markers
+    for key in ("Emergency stop.", "Fatal error", "Undefined control sequence"):
+        for i, line in enumerate(lines):
+            if key in line:
+                return "\n".join(lines[max(0, i - 2): i + 4]).strip()
+    # Last resort: first non-empty lines
+    head = [ln for ln in lines if ln.strip()][:6]
+    return "\n".join(head).strip()
+
+
+class ErrorDialog(tk.Toplevel):
+    """Minimal themed error dialog with summary + expandable full log + copy."""
+
+    def __init__(self, parent, *, title, summary, full_log, colors):
+        super().__init__(parent)
+        self.withdraw()
+        self.transient(parent)
+        self.title(title)
+        self.configure(bg=colors["bg"])
+        self.resizable(True, True)
+        self.minsize(520, 240)
+        self.geometry("760x420")
+
+        self._colors = colors
+        self._full_log = full_log or ""
+        self._expanded = False
+
+        # Card
+        card = tk.Frame(self, bg=colors["surface"], highlightthickness=1, highlightbackground=colors["border"])
+        card.pack(fill="both", expand=True, padx=18, pady=18)
+
+        head = tk.Frame(card, bg=colors["surface"])
+        head.pack(fill="x", padx=16, pady=(14, 10))
+
+        tk.Label(
+            head,
+            text="Error",
+            bg=colors["surface"],
+            fg=colors["accent"],
+            font=("DejaVu Sans", 12, "bold"),
+        ).pack(side="left")
+
+        # Summary
+        summary_frame = tk.Frame(card, bg=colors["surface"])
+        summary_frame.pack(fill="x", padx=16)
+
+        tk.Label(
+            summary_frame,
+            text=summary or "Compilation failed.",
+            bg=colors["surface"],
+            fg=colors["text"],
+            justify="left",
+            anchor="w",
+            font=("DejaVu Sans", 10),
+            wraplength=700,
+        ).pack(fill="x")
+
+        # Full log (hidden by default)
+        self.log_wrap = tk.Frame(card, bg=colors["surface"])
+        self.log_text = tk.Text(
+            self.log_wrap,
+            height=10,
+            font=("DejaVu Sans Mono", 10),
+            bg=colors["surface_alt"],
+            fg=colors["text"],
+            insertbackground=colors["text"],
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=colors["border"],
+            highlightcolor=colors["accent"],
+            padx=12,
+            pady=10,
+            wrap="none",
+        )
+        self.log_text.insert("1.0", self._full_log)
+        self.log_text.configure(state="disabled")
+
+        sb_y = ttk.Scrollbar(self.log_wrap, orient="vertical", command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=sb_y.set)
+
+        self.log_text.pack(side="left", fill="both", expand=True)
+        sb_y.pack(side="right", fill="y")
+
+        # Buttons
+        btns = tk.Frame(card, bg=colors["surface"])
+        btns.pack(fill="x", padx=16, pady=(12, 14))
+
+        self.toggle_btn = tk.Button(
+            btns,
+            text="Show full log",
+            bg=colors["ghost"],
+            fg=colors["text"],
+            activebackground=colors["soft_hover"],
+            activeforeground=colors["text"],
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=8,
+            cursor="hand2",
+            command=self._toggle,
+        )
+        self.toggle_btn.pack(side="left")
+
+        copy_btn = tk.Button(
+            btns,
+            text="Copy",
+            bg=colors["ghost"],
+            fg=colors["text"],
+            activebackground=colors["soft_hover"],
+            activeforeground=colors["text"],
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=8,
+            cursor="hand2",
+            command=self._copy,
+        )
+        copy_btn.pack(side="left", padx=(10, 0))
+
+        close_btn = tk.Button(
+            btns,
+            text="Close",
+            bg=colors["accent"],
+            fg="#ffffff",
+            activebackground=colors["accent_hover"],
+            activeforeground="#ffffff",
+            relief="flat",
+            bd=0,
+            padx=14,
+            pady=8,
+            cursor="hand2",
+            command=self.destroy,
+        )
+        close_btn.pack(side="right")
+
+        self.bind("<Escape>", lambda e: self.destroy())
+
+        self.update_idletasks()
+        self.deiconify()
+        self.grab_set()
+
+    def _toggle(self):
+        if not self._expanded:
+            self.log_wrap.pack(fill="both", expand=True, padx=16, pady=(10, 0))
+            self.toggle_btn.configure(text="Hide full log")
+            self._expanded = True
+        else:
+            self.log_wrap.pack_forget()
+            self.toggle_btn.configure(text="Show full log")
+            self._expanded = False
+
+    def _copy(self):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self._full_log)
+        except Exception:
+            pass
+
 class TexColApp:
 
     def _apply_modern_theme(self):
@@ -864,6 +1045,72 @@ class TexColApp:
             radius=10,
             bg=self.colors["surface_alt"],
         )
+    def _setup_code_editor(self, widget: tk.Text):
+        """Apply lightweight LaTeX syntax highlighting (Overleaf-like cues)."""
+        if not hasattr(self, "_hl_jobs"):
+            self._hl_jobs = {}
+        # Tags
+        widget.tag_configure("kw", foreground=self.colors["accent"], font=("DejaVu Sans Mono", 11, "bold"))
+        widget.tag_configure("env", foreground=self.colors["accent_hover"])
+        widget.tag_configure("cmd", foreground="#8b2c3a")  
+        widget.tag_configure("comment", foreground="#94a3b8", font=("DejaVu Sans Mono", 11))
+
+        widget.bind("<KeyRelease>", lambda e, w=widget: self._schedule_highlight(w))
+        widget.bind("<ButtonRelease-1>", lambda e, w=widget: self._schedule_highlight(w))
+        self._schedule_highlight(widget, immediate=True)
+
+    def _schedule_highlight(self, widget: tk.Text, immediate: bool = False):
+        if not hasattr(self, "_hl_jobs"):
+            self._hl_jobs = {}
+        job = self._hl_jobs.get(widget)
+        if job:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        delay = 1 if immediate else 120
+        self._hl_jobs[widget] = self.root.after(delay, lambda w=widget: self._apply_highlight(w))
+
+    def _apply_highlight(self, widget: tk.Text):
+        try:
+            text = widget.get("1.0", "end-1c")
+        except Exception:
+            return
+
+        # Clear tags
+        for tag in ("kw", "env", "cmd", "comment"):
+            widget.tag_remove(tag, "1.0", "end")
+
+        # Comments: % ... endline
+        for m in re.finditer(r"(?m)%.*$", text):
+            s = f"1.0+{m.start()}c"
+            e = f"1.0+{m.end()}c"
+            widget.tag_add("comment", s, e)
+
+        # Keywords
+        for m in re.finditer(r"\\(usepackage|begin|end|documentclass|usetikzlibrary|newcommand|renewcommand)\b", text):
+            s = f"1.0+{m.start()}c"
+            e = f"1.0+{m.end()}c"
+            widget.tag_add("kw", s, e)
+
+        # Environment names inside \begin{...} or \end{...}
+        for m in re.finditer(r"\\(?:begin|end)\{([^}]+)\}", text):
+            env_start = m.start(1)
+            env_end = m.end(1)
+            s = f"1.0+{env_start}c"
+            e = f"1.0+{env_end}c"
+            widget.tag_add("env", s, e)
+
+        # Generic commands (keep last so it doesn't override kw)
+        for m in re.finditer(r"\\[A-Za-z@]+\*?", text):
+            # Skip if already tagged as kw
+            s = f"1.0+{m.start()}c"
+            e = f"1.0+{m.end()}c"
+            # If keyword tag overlaps, don't add cmd
+            if widget.tag_nextrange("kw", s, e):
+                continue
+            widget.tag_add("cmd", s, e)
+
 
     def _make_rounded_textbox(self, parent, height, min_height):
         shell = RoundedCard(
@@ -929,7 +1176,10 @@ class TexColApp:
         self._show_dialog(title, message, kind="warning")
 
     def _show_error(self, title, message):
-        self._show_dialog(title, message, kind="error")
+        full = str(message)
+        summary = _extract_first_useful_latex_error(full)
+        dlg = ErrorDialog(self.root, title=title, summary=summary, full_log=full, colors=self.colors)
+        self.root.wait_window(dlg)
 
     def _set_input_mode(self, mode: str):
         mode = (mode or "").strip().lower()
@@ -988,7 +1238,7 @@ class TexColApp:
         self.root = root
         root.title("TexCol")
         root.geometry("760x780")
-        root.minsize(100, 640)
+        root.minsize(440, 640)
 
         self._apply_modern_theme()
         self._load_button_icons()
@@ -1007,6 +1257,11 @@ class TexColApp:
 
         self.build_dir = self.runtime_dir / "build"
         self.build_dir.mkdir(parents=True, exist_ok=True)
+        # Cache: per-render subdirs keyed by input hash
+        self.cache_dir = self.runtime_dir / "cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._cache_max_entries = 120
+        self._cache_max_age_sec = 7 * 24 * 3600
 
         # Runtime artifacts (drag source + browser page)
         self.runtime_svg = self.runtime_dir / "formula.svg"
@@ -1133,6 +1388,10 @@ class TexColApp:
             formula_card.inner, height=6, min_height=140
         )
         formula_box.pack(fill="x")
+        # Code-editor cues (lightweight LaTeX highlighting)
+        self._setup_code_editor(self.preamble)
+        self._setup_code_editor(self.formula)
+
 
         action_card = RoundedCard(
             main,
@@ -1435,6 +1694,74 @@ class TexColApp:
             except Exception:
                 pass
 
+    def _render_cache_key(self, *, compiler: str, mode: str, preamble: str, body: str) -> str:
+        h = hashlib.sha256()
+        h.update((compiler or "").encode())
+        h.update(b"\0")
+        h.update((mode or "").encode())
+        h.update(b"\0")
+        h.update((preamble or "").encode("utf-8", errors="ignore"))
+        h.update(b"\0")
+        h.update((body or "").encode("utf-8", errors="ignore"))
+        return h.hexdigest()[:24]
+
+    def _cache_paths(self, key: str):
+        d = self.cache_dir / key
+        return d, (d / "eq.tex"), (d / "eq.pdf"), (d / "eq.svg"), (d / "eq.png")
+
+    def _cache_try_load(self, key: str) -> bool:
+        d, _, _, svg_path, png_path = self._cache_paths(key)
+        if not svg_path.exists():
+            return False
+        try:
+            self.svg_data = svg_path.read_text(encoding="utf-8")
+            self.runtime_svg.write_text(self.svg_data, encoding="utf-8")
+            if png_path.exists():
+                self.png_bytes = png_path.read_bytes()
+            else:
+                self.png_bytes = cairosvg.svg2png(bytestring=self.svg_data.encode())
+                png_path.write_bytes(self.png_bytes)
+            self._redraw_preview()
+            # touch for LRU-ish eviction
+            now = time.time()
+            os.utime(d, (now, now))
+            return True
+        except Exception:
+            return False
+
+    def _cache_store_png(self, key: str):
+        d, _, _, _, png_path = self._cache_paths(key)
+        try:
+            if self.png_bytes:
+                png_path.write_bytes(self.png_bytes)
+        except Exception:
+            pass
+
+    def _cache_gc(self):
+        """Garbage-collect old cache entries."""
+        try:
+            entries = []
+            now = time.time()
+            for p in self.cache_dir.iterdir():
+                if not p.is_dir():
+                    continue
+                try:
+                    mtime = p.stat().st_mtime
+                except Exception:
+                    mtime = 0
+                # age eviction
+                if mtime and (now - mtime) > self._cache_max_age_sec:
+                    shutil.rmtree(p, ignore_errors=True)
+                    continue
+                entries.append((mtime, p))
+            # size eviction (keep newest)
+            if len(entries) > self._cache_max_entries:
+                entries.sort(key=lambda t: t[0], reverse=True)
+                for _, p in entries[self._cache_max_entries:]:
+                    shutil.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
+
     def generate(self):
         preamble = self.preamble.get("1.0", "end").strip()
         formula = self.formula.get("1.0", "end").strip()
@@ -1454,19 +1781,16 @@ class TexColApp:
         if compiler not in {"pdflatex", "lualatex", "xelatex"}:
             compiler = "pdflatex"
 
-        render_key = (mode, compiler, preamble, formula)
-        if render_key == self._last_render_key and self.svg_data:
-            self.status.config(text="Already up to date")
-            return
 
-
+        
         if mode == "tikz":
             body_src = formula.strip()
             if not body_src:
                 self._show_warning("TexCol", "Empty TikZ input.")
                 return
 
-            if re.search(r"\\begin\{tikzpicture\}", body_src) is None:
+            # Auto-wrap if user did not provide a tikzpicture environment
+            if re.search(r"\begin\\{tikzpicture\\}", body_src) is None:
                 body = "\\begin{tikzpicture}\n" + body_src + "\n\\end{tikzpicture}"
             else:
                 body = body_src
@@ -1479,13 +1803,20 @@ class TexColApp:
                 "\\end{document}\n"
             )
 
-            self._clean_build_dir()
-            tex_path = self.build_dir / "eq.tex"
-            pdf_path = self.build_dir / "eq.pdf"
-            svg_path = self.build_dir / "eq.svg"
-            tex_path.write_text(tex, encoding="utf-8")
-            t0 = time.perf_counter()
+            key = self._render_cache_key(compiler=compiler, mode="tikz", preamble=preamble, body=body)
+            if key == self._last_render_key and self.svg_data:
+                self.status.config(text="Already up to date")
+                return
+            if self._cache_try_load(key):
+                self._last_render_key = key
+                self.status.config(text="Loaded from cache")
+                return
 
+            work_dir, tex_path, pdf_path, svg_path, png_path = self._cache_paths(key)
+            work_dir.mkdir(parents=True, exist_ok=True)
+            tex_path.write_text(tex, encoding="utf-8")
+
+            t0 = time.perf_counter()
             try:
                 subprocess.run(
                     [
@@ -1493,7 +1824,7 @@ class TexColApp:
                         "-interaction=nonstopmode",
                         "-halt-on-error",
                         "-output-directory",
-                        str(self.build_dir),
+                        str(work_dir),
                         str(tex_path),
                     ],
                     check=True,
@@ -1511,8 +1842,11 @@ class TexColApp:
                 self.svg_data = svg_path.read_text(encoding="utf-8")
                 self.runtime_svg.write_text(self.svg_data, encoding="utf-8")
                 self.png_bytes = cairosvg.svg2png(bytestring=self.svg_data.encode())
+                png_path.write_bytes(self.png_bytes)
                 self._redraw_preview()
-                self._last_render_key = render_key
+
+                self._last_render_key = key
+                self._cache_gc()
                 elapsed_ms = int((time.perf_counter() - t0) * 1000)
                 self.status.config(text=f"Rendered in {elapsed_ms} ms")
                 return
@@ -1681,6 +2015,7 @@ class TexColApp:
                     % converted_env_name
                 )
 
+        
         tex = (
             "\\documentclass[preview,border=2pt]{standalone}\n"
             f"{preamble}\n"
@@ -1691,12 +2026,17 @@ class TexColApp:
             "\\end{document}\n"
         )
 
-        self._clean_build_dir()
+        key = self._render_cache_key(compiler=compiler, mode="formula", preamble=preamble, body=body)
+        if key == self._last_render_key and self.svg_data:
+            self.status.config(text="Already up to date")
+            return
+        if self._cache_try_load(key):
+            self._last_render_key = key
+            self.status.config(text="Loaded from cache")
+            return
 
-        tex_path = self.build_dir / "eq.tex"
-        pdf_path = self.build_dir / "eq.pdf"
-        svg_path = self.build_dir / "eq.svg"
-
+        work_dir, tex_path, pdf_path, svg_path, png_path = self._cache_paths(key)
+        work_dir.mkdir(parents=True, exist_ok=True)
         tex_path.write_text(tex, encoding="utf-8")
         t0 = time.perf_counter()
 
@@ -1707,7 +2047,7 @@ class TexColApp:
                     "-interaction=nonstopmode",
                     "-halt-on-error",
                     "-output-directory",
-                    str(self.build_dir),
+                    str(work_dir),
                     str(tex_path),
                 ],
                 check=True,
@@ -1725,9 +2065,11 @@ class TexColApp:
             self.svg_data = svg_path.read_text(encoding="utf-8")
             self.runtime_svg.write_text(self.svg_data, encoding="utf-8")
             self.png_bytes = cairosvg.svg2png(bytestring=self.svg_data.encode())
+            png_path.write_bytes(self.png_bytes)
 
             self._redraw_preview()
-            self._last_render_key = render_key
+            self._last_render_key = key
+            self._cache_gc()
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
             self.status.config(text=f"Rendered in {elapsed_ms} ms")
 
