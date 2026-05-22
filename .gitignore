@@ -36,3 +36,6 @@ Thumbs.db
 # Project runtime temp folder
 TexCol_DnD_tmp/
 
+#Codex
+.codex/
+
