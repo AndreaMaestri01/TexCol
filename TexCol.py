@@ -10,6 +10,7 @@ import atexit
 import time
 import threading
 import hashlib
+import sys
 import webbrowser
 import re
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -28,8 +29,8 @@ LEGACY_APP_DIR = Path.home() / "TexCol_app"
 PREAMBLE_FILE = APP_DIR / "preamble.tex"
 LEGACY_PREAMBLE_FILE = LEGACY_APP_DIR / "preamble.tex"
 
-# Dedicated folder (no /tmp): visible to Firefox (snap-safe)
-RUNTIME_DIR = Path("/home/andrea-maestri/user/TexCol_app/TexCol_DnD_tmp")
+RUNTIME_DIR_NAME = "TexCol_DnD_tmp"
+RUNTIME_DIR = APP_DIR / RUNTIME_DIR_NAME
 
 
 # ----------------------------
@@ -38,15 +39,16 @@ RUNTIME_DIR = Path("/home/andrea-maestri/user/TexCol_app/TexCol_DnD_tmp")
 def _safe_wipe_dir(dir_path: Path) -> None:
     """
     Delete ALL contents inside the folder while keeping the folder itself.
-    Minimal safety check: requires path name to contain 'TexCol_DnD_tmp' and be deep enough.
+    Minimal safety check: requires the expected runtime folder name and
+    refuses paths directly below a filesystem root.
     """
     dp = dir_path.resolve()
-    if "TexCol_DnD_tmp" not in dp.name:
+    if dp.name != RUNTIME_DIR_NAME:
         raise RuntimeError(f"Refuse wipe: path name not expected: {dp}")
 
-    # Avoid disasters like wiping HOME or root paths
-    if len(dp.parts) < 5:
-        raise RuntimeError(f"Refuse wipe: path too shallow: {dp}")
+    # Avoid disasters like wiping a root-level folder.
+    if dp.parent == dp or dp.parent == Path(dp.anchor):
+        raise RuntimeError(f"Refuse wipe: path too close to filesystem root: {dp}")
 
     dp.mkdir(parents=True, exist_ok=True)
 
@@ -58,6 +60,33 @@ def _safe_wipe_dir(dir_path: Path) -> None:
                 child.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+def _latex_install_hint() -> str:
+    if sys.platform.startswith("win"):
+        return (
+            "Install MiKTeX or TeX Live for Windows, enable PATH integration, "
+            "then close and reopen the terminal before starting TexCol.\n"
+            "Required commands: latex, pdflatex, dvisvgm.\n"
+            "Optional commands: lualatex, xelatex."
+        )
+    if sys.platform == "darwin":
+        return (
+            "Install MacTeX or BasicTeX, then make sure latex, pdflatex and "
+            "dvisvgm are available in PATH.\n"
+            "Optional commands: lualatex, xelatex."
+        )
+    return (
+        "Install the required LaTeX tools, for example:\n"
+        "  sudo apt install texlive-latex-base dvisvgm\n"
+        "Optional engines usually come from texlive-luatex and texlive-xetex."
+    )
+
+
+def _subprocess_window_kwargs() -> dict:
+    if sys.platform.startswith("win") and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
 
 
 class _RuntimeHTTPHandler(SimpleHTTPRequestHandler):
@@ -1244,7 +1273,8 @@ class TexColApp:
         self._load_button_icons()
         root.configure(bg=self.colors["bg"])
 
-        # Runtime directory (fixed)
+        # Runtime directory inside the project, so drag/drop and browser helpers
+        # can read the same file on Windows, macOS, and Linux.
         self.runtime_dir = RUNTIME_DIR
         try:
             _safe_wipe_dir(self.runtime_dir)
@@ -1553,8 +1583,9 @@ class TexColApp:
     # ----------------------------
     def _on_drag_init(self, event):
         if self.runtime_svg.exists():
-            # TkDND expects a path "list"; braces handle spaces.
-            data = f"{{{self.runtime_svg}}}"
+            # TkDND expects a Tcl path list; let Tcl quote platform-specific
+            # separators and spaces correctly.
+            data = self.root.tk.call("list", str(self.runtime_svg))
             return (COPY, DND_FILES, data)
         return None
 
@@ -1750,6 +1781,7 @@ class TexColApp:
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **_subprocess_window_kwargs(),
         )
 
         subprocess.run(
@@ -1757,6 +1789,7 @@ class TexColApp:
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **_subprocess_window_kwargs(),
         )
 
     def _run_dvi_svg_pipeline(self, *, tex_path: Path, svg_path: Path, work_dir: Path) -> None:
@@ -1773,6 +1806,7 @@ class TexColApp:
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **_subprocess_window_kwargs(),
         )
 
         subprocess.run(
@@ -1780,6 +1814,7 @@ class TexColApp:
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **_subprocess_window_kwargs(),
         )
 
     def _compile_tex_to_svg(self, *, tex_path: Path, pdf_path: Path, svg_path: Path, work_dir: Path, compiler: str) -> None:
@@ -1923,8 +1958,7 @@ class TexColApp:
                 self._show_error(
                     "TexCol",
                     f"Command not found: {e.filename}\n"
-                    "Install required packages, for example:\n"
-                    "  sudo apt install texlive-latex-base dvisvgm"
+                    f"{_latex_install_hint()}"
                 )
                 self.status.config(text="Error.")
                 return
@@ -2131,8 +2165,7 @@ class TexColApp:
             self._show_error(
                 "TexCol",
                 f"Command not found: {e.filename}\n"
-                "Install required packages, for example:\n"
-                "  sudo apt install texlive-latex-base dvisvgm"
+                f"{_latex_install_hint()}"
             )
             self.status.config(text="Error.")
 
@@ -2201,6 +2234,16 @@ class TexColApp:
         self.runtime_svg.write_text(self.svg_data, encoding="utf-8")
         svg_uri = f"{self.runtime_svg.resolve().as_uri()}\n".encode("utf-8")
 
+        def copy_svg_text_fallback():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(self.svg_data)
+            self.root.update()
+            self._show_info(
+                "TexCol",
+                "SVG XML copied to the clipboard as text.\n"
+                "For file-based paste workflows, use Download or drag and drop.",
+            )
+
         # Wayland: wl-copy (wl-clipboard)
         if shutil.which("wl-copy"):
             try:
@@ -2208,6 +2251,7 @@ class TexColApp:
                     ["wl-copy", "--type", "text/uri-list"],
                     input=svg_uri,
                     check=True,
+                    **_subprocess_window_kwargs(),
                 )
                 self._show_info("TexCol", "SVG copied as file (URI).")
                 return
@@ -2217,6 +2261,7 @@ class TexColApp:
                         ["wl-copy", "--type", "image/svg+xml"],
                         input=svg_bytes,
                         check=True,
+                        **_subprocess_window_kwargs(),
                     )
                     self._show_info("TexCol", "SVG copied to clipboard (image/svg+xml).")
                     return
@@ -2231,6 +2276,7 @@ class TexColApp:
                     ["xclip", "-selection", "clipboard", "-t", "text/uri-list", "-i"],
                     input=svg_uri,
                     check=True,
+                    **_subprocess_window_kwargs(),
                 )
                 self._show_info("TexCol", "SVG copied as file (URI).")
                 return
@@ -2240,6 +2286,7 @@ class TexColApp:
                         ["xclip", "-selection", "clipboard", "-t", "image/svg+xml", "-i"],
                         input=svg_bytes,
                         check=True,
+                        **_subprocess_window_kwargs(),
                     )
                     self._show_info("TexCol", "SVG copied to clipboard (image/svg+xml).")
                     return
@@ -2247,14 +2294,26 @@ class TexColApp:
                     self._show_error("TexCol", f"xclip error: {e}")
                     return
 
-        self._show_warning(
-            "TexCol",
-            "Neither wl-copy nor xclip was found.\n"
-            "Install one of:\n"
-            "  sudo apt install wl-clipboard\n"
-            "  sudo apt install xclip\n\n"
-            "Alternatively, use drag and drop or Download."
-        )
+        if sys.platform == "darwin" and shutil.which("pbcopy"):
+            try:
+                subprocess.run(["pbcopy"], input=svg_bytes, check=True, **_subprocess_window_kwargs())
+                self._show_info("TexCol", "SVG XML copied to the clipboard as text.")
+                return
+            except Exception as e:
+                self._show_error("TexCol", f"pbcopy error: {e}")
+                return
+
+        try:
+            copy_svg_text_fallback()
+            return
+        except Exception as e:
+            self._show_warning(
+                "TexCol",
+                "No supported clipboard backend is available.\n"
+                f"Details:\n{e}\n\n"
+                "Use Download or drag and drop instead.",
+            )
+            return
 
     # ----------------------------
     # Download SVG
@@ -2289,13 +2348,14 @@ if __name__ == "__main__":
     root.title("TexCol")
 
     try:
-        icon_path = Path("/home/andrea-maestri/user/TexCol_app/texcol.png")
-        if icon_path.exists():
-            icon_img = Image.open(icon_path).convert("RGBA")
-            icon_img.thumbnail((128, 128), Image.LANCZOS)
-            ico = ImageTk.PhotoImage(icon_img)
-            root.iconphoto(True, ico)
-            root._texcol_icon = ico
+        for icon_path in (APP_DIR / "texcol.png", LEGACY_APP_DIR / "texcol.png"):
+            if icon_path.exists():
+                icon_img = Image.open(icon_path).convert("RGBA")
+                icon_img.thumbnail((128, 128), Image.LANCZOS)
+                ico = ImageTk.PhotoImage(icon_img)
+                root.iconphoto(True, ico)
+                root._texcol_icon = ico
+                break
     except Exception as e:
         print("ICON ERROR:", repr(e))
 
